@@ -16,6 +16,6 @@ def load_clean_pop(filepath):
         pop_df (pandas df): cleaned dataframe of population data
     '''
 
-    df = pd.read_csv(filepath, header=1)
+    df = pd.read_csv(filepath, header=4)
 
     return df

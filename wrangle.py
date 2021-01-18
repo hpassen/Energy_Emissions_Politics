@@ -6,19 +6,21 @@ import numpy as np
 import pandas as pd
 
 POPS = ["data/pop_90-99.csv", "data/pop_00-10.csv", "data/pop_10-19.csv"]
+CODE = "data/state_codes.csv"
+ENG = ["data/emission_annual.csv", "data/generation_annual.csv"]
 
-def load_clean_pop(filepath):
+def load_clean_pop(filename):
     '''
     Imports and cleans a census estimates dataframe
 
     Inputs: 
-        filepath (str): the string for the filepath
+        filename (str): the string for the filepath
 
     Returns: 
         pop_df (pandas df): cleaned dataframe of population data
     '''
 
-    df = pd.read_csv(filepath, header=3, thousands=",")
+    df = pd.read_csv(filename, header=3, thousands=",")
     df.columns = df.columns.str.lower()
     df = df.dropna()
 
@@ -35,12 +37,13 @@ def load_clean_pop(filepath):
     return df_states
 
 
-def merge_pop(files=POPS):
+def merge_pop(files=POPS, codes=CODE):
     '''
     Loads, cleans, and merges all three population data sets
 
     Inputs: 
         files (lst): list of filepaths for the three data sets (constant)
+        codes (str): the filepath to the state codes data
 
     Returns:
         pop_df (pandas df): a dataframe of population data from 1990-2019
@@ -51,11 +54,36 @@ def merge_pop(files=POPS):
         df = load_clean_pop(filename)
         pop_df = pop_df.merge(df, how="inner", on="geography")
 
+    pop_df["geography"] = pop_df["geography"].str.lower().str.strip(".")
+
+    letters = pd.read_csv(codes)
+    letters.columns = letters.columns.str.lower()
+    letters["state"] = letters["state"].str.lower()
+    letters = letters[["state", "code"]]
+    
+    pop_df = letters.merge(pop_df, how="inner", left_on="state", 
+                           right_on="geography")
+
     drop_cols = [col for col in pop_df.columns if \
                  col != "geography" and len(col) > 4]
     pop_df.drop(columns=drop_cols, inplace=True)
 
-    pop_df["geography"] = pop_df["geography"].str.lower().str.strip(".")
-
     return pop_df
+
+
+def load_clean_eng(filename):
+    '''
+    Loads and cleans a data set with energy data
+
+   Inputs: 
+        filename (str): the string for the filepath
+
+    Returns: 
+        pop_df (pandas df): cleaned dataframe of population data
+    '''
+    df = pd.read_csv(filename, thousands=",")
+
+    return df
+
+
     

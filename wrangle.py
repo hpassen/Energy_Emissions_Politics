@@ -9,8 +9,25 @@ CODE = "data/state_codes.csv"
 POPS = ["data/pop_90-99.csv", "data/pop_00-10.csv", "data/pop_10-19.csv"]
 LEG = "data/leg_90-19.csv"
 ENG = ["data/generation_annual.csv", "data/emission_annual.csv"]
+GEO = "Data/shapefiles/cb_2019_us_state_500k.shp"
 
 PUNCTUATION = "!@#$%^&*."
+
+
+# FUNCTIONS TO IMPORT AND CLEAN DATA
+def load_states(filename=GEO):
+    gdf = gpd.read_file(filename)
+    gdf.columns = gdf.columns.str.lower()
+
+    gdf.rename(columns={"stusps": "code", "name": "state"}, inplace=True)
+    gdf = gdf[["statefp", "code", "state", "geometry"]]
+
+    gdf['centroid_lon'] = gdf['geometry'].centroid.x
+    gdf['centroid_lat'] = gdf['geometry'].centroid.y
+
+    gdf["code"] = gdf["code"].str.upper()
+
+    return gdf
 
 
 def load_codes(filename=CODE):
@@ -27,8 +44,7 @@ def load_codes(filename=CODE):
     letters.columns = letters.columns.str.lower()
     letters = letters[["state", "code"]]
     
-    for col in letters.columns:
-        letters[col] = letters[col].str.lower()
+    letters["code"] = letters["code"].str.upper()
 
     return letters
 
@@ -80,12 +96,18 @@ def build_pop(files=POPS):
         df = load_clean_pop(filename)
         pop_df = pop_df.merge(df, how="inner", on="state")
 
-    pop_df["state"] = pop_df["state"].str.lower().str.strip(PUNCTUATION)
+    pop_df["state"] = pop_df["state"].str.strip(PUNCTUATION)
     pop_df = letters.merge(pop_df, how="inner", on="state")
 
     drop_cols = [col for col in pop_df.columns if \
                  col != "state" and len(col) > 4]
     pop_df.drop(columns=drop_cols, inplace=True)
+
+    pop_df = pop_df.melt(id_vars=["state", "code"], 
+                         value_vars=[col for col in pop_df.columns if 
+                                     col not in ["state", "code"]])
+    
+    pop_df = pop_df.rename(columns={"variable": "year", "value": "pop"})
 
     return pop_df
 
@@ -105,13 +127,19 @@ def load_clean_pol(filename=LEG):
     df = pd.read_csv(filename)
     df.columns = df.columns.str.lower()
 
-    for col in df.columns:
-        df[col] = df[col].str.lower()
+    for col in [col for col in df.columns if col != "state"]:
         df[col] = df[col].str.strip(PUNCTUATION)
-        df[col] = df[col].str.replace("divided", "split")
+        df[col] = df[col].str.replace("Divided", "Split")
 
     pol_df = letters.merge(df, how="inner", on="state")
-    pol_df.fillna("unicam", inplace=True)
+    #Nebraska has a unicameral legislature, so I am including it as split
+    pol_df.fillna("Split", inplace=True)
+
+    pol_df = pol_df.melt(id_vars=["state", "code"], 
+                         value_vars=[col for col in pol_df.columns if 
+                                     col not in ["state", "code"]])
+    
+    pol_df = pol_df.rename(columns={"variable": "year", "value": "pol"})
 
     return pol_df
 
@@ -130,35 +158,39 @@ def load_clean_eng(filename):
     df.columns = df.columns.str.lower()
     df.columns = df.columns.str.replace(" ", "_", regex=True)
     df.columns = df.columns.str.replace(r"\n", "_", regex=True)
-    # df["year"] = pd.to_datetime(df["year"], format="%Y")
-    # df["year"] = df["year"].dt.year
 
     if "generation" in filename:
-        for col in df.columns[1:-1]:
-            df[col] = df[col].str.lower()
-            df[col] = df[col].str.replace(" ", "_")
-
-        df = df.rename(columns={"energy_source": "source", 
+        df = df.rename(columns={"energy_source": "src", 
                                 "generation_(megawatthours)": "gen_mwh"})
+        
+        df["renew"] = np.where((df["src"] == "Coal") | 
+                               (df["src"] == "Natural Gas") | 
+                               (df["src"] == "Petroleum"), "Nonrenewable", "Renewable")
 
-        totals_mask = df.loc[:, "type_of_producer"] == "total_electric_power_industry"
+        totals_mask = df.loc[:, "type_of_producer"] == "Total Electric Power Industry"
         keep_cols = [col for col in df.columns if col != "type_of_producer"]
+
+        df = df.loc[df.loc[:, "src"] != "Total", :]    
      
     elif "emission" in filename:
-        for col in df.columns[1:-3]:
-            df[col] = df[col].str.lower()
-            df[col] = df[col].str.replace(" ", "_")
-
-        df = df.rename(columns={"energy_source": "source", 
+        df = df.rename(columns={"energy_source": "src", 
                                 "co2_(metric_tons)": "co2_tons",
                                 "so2_(metric_tons)": "so2_tons",
                                 "nox_(metric_tons)": "nox_tons"}) 
 
-        totals_mask = df.loc[:, "producer_type"] == "total_electric_power_industry"
+        totals_mask = df.loc[:, "producer_type"] == "Total Electric Power Industry"
         keep_cols = [col for col in df.columns if col != "producer_type"]
 
     eng_df = df.loc[totals_mask, keep_cols]
     eng_df.reset_index(drop=True, inplace=True)
+
+    eng_df["src"] = eng_df["src"].str.replace("Hydroelectric Conventional", 
+                                              "Hydroelectric", regex=True)
+    eng_df["src"] = eng_df["src"].str.replace("Wood and Wood Derived Fuels", 
+                                              "Wood Derived Fuels", regex=True)
+    eng_df["src"] = eng_df["src"].str.replace("Solar Thermal and Photovoltaic", 
+                                              "Solar", regex=True)
+    eng_df["state"] = eng_df["state"].str.upper()
 
     return eng_df
 
@@ -178,41 +210,68 @@ def build_eng(files=ENG):
     
     for filename in files[1:]:
         df = load_clean_eng(filename)
-        eng_df = eng_df.merge(df, how="left", on=["state", "year", "source"])
+        eng_df = eng_df.merge(df, how="left", on=["state", "year", "src"])
 
     eng_df.fillna(0, inplace=True) 
+    eng_df = eng_df.loc[eng_df.loc[:, "state"] != "US-Total", :] 
+    eng_df = eng_df.loc[eng_df.loc[:, "state"] != "US-TOTAL", :] 
+    eng_df = eng_df.loc[eng_df.loc[:, "state"] != "  ", :] 
+    ##remove data from DC bc there's limited data
+    eng_df = eng_df.loc[eng_df.loc[:, "state"] != "DC", :] 
+
+    eng_df = eng_df.rename(columns={"state": "code"})
 
     return eng_df
 
 
-def widen(input_df):
+def build_full():
     '''
-    Turns a dataframe into a widened pivot table - each row is state, each col 
-    is all of the other variables
+    Loads, cleans, and merges all energy data sets
 
-    Inputs:
-        input_df (pandas df): a dataframe to widen
+    Inputs: 
+        none (defaults in all functions)
 
-    Returns:
-        pivot_df (pandas df): a pivoted dataframe
+    Returns: 
+        data (pandas df) a dataframe with all the data
     '''
-    df = input_df.copy()
+    eng_df = build_eng()
+    pop = build_pop()
+    pol = load_clean_pol()
 
-    df["year_source"] = df["year"] + "_" + df["source"]
+    #Merge 3 data sets together
+    data = pop.merge(pol, how="left", on=["state", "code", "year"])
+    data["year"] = data["year"].astype(int)
 
-    if "gen_mwh" in df.columns:
-        wide = df.pivot(index="state", columns="year_source", 
-                    values="gen_mwh")   
+    for state in data["code"].unique():
+        state_filter = data["code"] == state
+        data.loc[state_filter, "pol"] = data.loc[state_filter, "pol"].fillna(method="ffill")
 
-    if "co2_tons" in df.columns:
-        df = df[["state", "year_source", "co2_tons"]]
-        wide = df.pivot(index="state", columns="year_source", 
-                        values=["co2_tons"])
+    data = data.merge(eng_df, how="right", on=["year", "code"])
 
-    wide = wide.reset_index()
-    wide.fillna(0, inplace=True)
+    #Calculate per person emissions/energy
+    data["co2_pp"] = data["co2_tons"] / data["pop"]
+    data["mwh_pp"] = data["gen_mwh"] / data["pop"]
 
-    return wide
+    #Calculate % share of energy generation by source
+    sum_mwh = data.groupby(["year", "code"])[["gen_mwh", "mwh_pp"]].sum().reset_index()
+    sum_mwh.rename(columns={"gen_mwh": "sum_gen_mwh",
+                            "mwh_pp": "sum_mwh_pp"}, inplace=True)
 
+    data = data.merge(sum_mwh, how="left", on=["year", "code"])
+    data["mwh_pp_pct"] = data["mwh_pp"] / data["sum_mwh_pp"]
+    data["gen_mwh_pct"] = data["gen_mwh"] / data["sum_gen_mwh"]
 
-    
+    #Create a "dirtiness ranking" for each source based on how much emissions 
+    #it creates per mwh
+    mwh_co2 = data.groupby(["src"])[["gen_mwh", "co2_tons"]].sum()
+    mwh_co2 = mwh_co2.reset_index()
+    mwh_co2["co2_mwh"] = mwh_co2["co2_tons"] / mwh_co2["gen_mwh"]
+    mwh_co2.sort_values("co2_mwh", ascending=False, inplace=True)
+    mwh_co2.reset_index(drop=True, inplace=True)
+    mwh_co2["rank"] = mwh_co2.index + 1
+
+    data = data.merge(mwh_co2[["src", "rank"]], how="left", on="src")
+    data["year"] = data["year"].astype(int)
+
+    return data
+

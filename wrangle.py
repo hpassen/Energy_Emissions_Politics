@@ -4,12 +4,13 @@ Module for wrangling data: cleans and prepares all data sets for analysis
 
 import numpy as np
 import pandas as pd
+import geopandas as gpd
 
 CODE = "data/state_codes.csv"
 POPS = ["data/pop_90-99.csv", "data/pop_00-10.csv", "data/pop_10-19.csv"]
 LEG = "data/leg_90-19.csv"
 ENG = ["data/generation_annual.csv", "data/emission_annual.csv"]
-GEO = "Data/shapefiles/cb_2019_us_state_500k.shp"
+GEO = "data/shapefiles/cb_2019_us_state_500k.shp"
 
 PUNCTUATION = "!@#$%^&*."
 
